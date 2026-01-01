@@ -1,12 +1,34 @@
+import com.badlogicgames.packr.Packr
+
+buildscript {
+    repositories {
+        maven { url "https://artifactory.nimblygames.com/artifactory/ng-public" }
+        mavenCentral()
+    }
+    dependencies {
+        classpath "com.badlogicgames.packr:packr:4.0.0"
+    }
+}
+
 sourceSets.main.java.srcDirs = ["src/"]
 
 project.ext.mainClassName = "mindustry.desktop.DesktopLauncher"
 project.ext.assetsDir = new File("../core/assets")
 
-def enableTemplates = true
-def JDK_DIR = "$System.env.JDK_DIR"
-def ICON_DIR = new File("$rootDir/core/assets/icons/icon.icns")
+
+def iconFile = new File(rootDir,"core/assets/icons/icon.icns").absolutePath
 def platforms = ["Linux64", "Windows64", "Windows32", "MacOS"]
+def enableTemplates = ["Windows32"]
+
+Map<String,String> platformsJREs = platforms.minus(enableTemplates).collectEntries {
+    def propertyKey = "mindustry.desktop.${it.toLowerCase()}.packagingJRE".toString()
+    [it, properties[propertyKey] as String ?: logger.error("$propertyKey is null")]
+}
+
+Map<String,String> platformsTemplates = enableTemplates.collectEntries {
+    def propertyKey = "mindustry.desktop.${it.toLowerCase()}.packagingTemplates".toString()
+    [it, properties[propertyKey] as String ?: logger.error("$propertyKey is null")]
+}
 
 task run(dependsOn: classes, type: JavaExec){
     mainClass = project.mainClassName
@@ -108,10 +130,10 @@ platforms.each{ platform ->
             }
 
             //the Windows32 version uses an old java-8 based template, because packr and jpackage don't support win32
-            if(enableTemplates && (platform == "Windows32")){
+            if(enableTemplates.contains(platform)){
                 copy{
                     into "build/packr/output"
-                    from "${JDK_DIR}/templates/${platform.toString().toLowerCase()}"
+                    from platformsTemplates[platform]
                 }
 
                 copy{
@@ -120,18 +142,15 @@ platforms.each{ platform ->
                     from "build/libs/${appName}.jar"
                 }
             }else{
-                def jarPath = JDK_DIR + "packr.jar"
-                def args = new String[]{"java", "-jar", jarPath}
-
-                args += new String[]{
+                def args = new String[]{
                         "--platform", platform == "MacOS" ? "Mac" : platform.toString(),
-                        "--jdk", JDK_DIR + "jre-${platform.toString().toLowerCase()}",
+                        "--jdk", platformsJREs[platform],
                         "--executable", appName,
                         "--classpath", "$rootDir/desktop/build/packr/desktop.jar".toString(),
                         "--mainclass", project.ext.mainClassName,
                         "--verbose",
                         "--bundle", getPackage() + ".mac",
-                        "--icon", ICON_DIR,
+                        "--icon", iconFile,
                         "--output", "$rootDir/desktop/build/packr/output".toString(),
                         "--removelibs", "$rootDir/desktop/build/packr/desktop.jar".toString()
                 }
@@ -147,10 +166,7 @@ platforms.each{ platform ->
                 args += "XX:+UseCompactObjectHeaders"
                 args += "enable-native-access=ALL-UNNAMED"
 
-                exec{
-                    commandLine args.toList()
-                    standardOutput = System.out
-                }
+                Packr.main(args)
 
                 def outputJsonFile = platform != "MacOS" ? file("build/packr/output/Mindustry.json") : file("build/packr/output/${appName}.app/Contents/Resources/Mindustry.json")
 
