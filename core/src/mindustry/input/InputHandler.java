@@ -1,6 +1,7 @@
 package mindustry.input;
 
 import arc.*;
+import arc.audio.*;
 import arc.func.*;
 import arc.graphics.*;
 import arc.graphics.g2d.*;
@@ -37,7 +38,6 @@ import mindustry.ui.fragments.*;
 import mindustry.world.*;
 import mindustry.world.blocks.ConstructBlock.*;
 import mindustry.world.blocks.*;
-import mindustry.world.blocks.defense.turrets.*;
 import mindustry.world.blocks.distribution.*;
 import mindustry.world.blocks.payloads.*;
 import mindustry.world.blocks.storage.*;
@@ -340,11 +340,6 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
                     unit.lastCommanded = player.coloredName();
                     if(ai.commandQueue.size <= 0){
                         ai.group = null;
-                    }
-
-                    //remove when other player command
-                    if(!headless && player != Vars.player){
-                        control.input.selectedUnits.remove(unit);
                     }
 
                     toAdd.add(unit);
@@ -948,6 +943,9 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
         if(locked()){
             block = null;
         }
+
+        player.selectedBlock = block;
+        player.selectedRotation = rotation;
 
         wasShooting = player.shooting;
 
@@ -1630,22 +1628,18 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
         if(withText){
             Font font = Fonts.outline;
             font.setColor(col2);
-            var ints = font.usesIntegerPositions();
+            boolean ints = font.usesIntegerPositions();
             font.setUseIntegerPositions(false);
-            var z = Draw.z();
+            float z = Draw.z();
             Draw.z(Layer.endPixeled);
             font.getData().setScale(1 / renderer.camerascale);
-            var snapToCursor = Core.settings.getBool("selectionsizeoncursor");
-            var textOffset = Core.settings.getInt("selectionsizeoncursoroffset", 5);
             int width = (int)((result.x2 - result.x) / 8);
             int height = (int)((result.y2 - result.y) / 8);
             int area = width * height;
 
-            // FINISHME: When not snapping to cursor, perhaps it would be best to choose the corner closest to the cursor that's at least a block away?
             font.draw(width + "x" + height + " (" + area + ")",
-            snapToCursor ? input.mouseWorldX() + textOffset * (4 / renderer.camerascale) : result.x2,
-            snapToCursor ? input.mouseWorldY() - textOffset * (4 / renderer.camerascale) : result.y
-            );
+            input.mouseWorldX() + 5 * (4 / renderer.camerascale),
+            input.mouseWorldY() - 5 * (4 / renderer.camerascale));
             font.setColor(Color.white);
             font.getData().setScale(1);
             font.setUseIntegerPositions(ints);
@@ -1847,7 +1841,10 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
             if((!config.isShown() && build.shouldShowConfigure(player)) //if the config fragment is hidden, show
             //alternatively, the current selected block can 'agree' to switch config tiles
             || (config.isShown() && config.getSelected().onConfigureBuildTapped(build) && build.shouldShowConfigure(player))){
-                Sounds.click.at(build);
+                AudioBus oldBus = build.block.configureSound.bus;
+                build.block.configureSound.bus = control.sound.uiBus;
+                build.block.configureSound.at(build);
+                build.block.configureSound.bus = oldBus;
                 config.showConfig(build);
             }
             //otherwise...
@@ -1945,7 +1942,8 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
         && !player.dead()
         && player.unit().validMine(tile)
         && player.unit().acceptsItem(player.unit().getMineResult(tile))
-        && !((!Core.settings.getBool("doubletapmine") && tile.floor().playerUnmineable) && tile.overlay().itemDrop == null);
+        && !((!Core.settings.getBool("doubletapmine") && tile.floor().playerUnmineable) && tile.overlay().itemDrop == null)
+        && !((!Core.settings.getBool("doubletapmine") && tile.overlay().playerUnmineable) && tile.overlay().itemDrop != null);
     }
 
     /** Returns the tile at the specified MOUSE coordinates. */
@@ -2328,7 +2326,7 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
             Point2 next = i == points.size - 1 ? null : points.get(i + 1);
             line.x = point.x;
             line.y = point.y;
-            if((!overrideLineRotation || diagonal) && !(block != null && block.ignoreLineRotation)){
+            if((!overrideLineRotation || diagonal) && !(block != null && block.ignoreLineRotation && !mobile)){
                 int result = baseRotation;
                 if(next != null){
                     result = Tile.relativeTo(point.x, point.y, next.x, next.y);

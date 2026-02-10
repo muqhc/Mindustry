@@ -30,7 +30,8 @@ Map<String,String> platformsTemplates = enableTemplates.collectEntries {
     [it, properties[propertyKey] as String ?: logger.error("$propertyKey is null")]
 }
 
-task run(dependsOn: classes, type: JavaExec){
+tasks.register('run', JavaExec){
+    dependsOn classes
     mainClass = project.mainClassName
     classpath = sourceSets.main.runtimeClasspath
     standardInput = System.in
@@ -48,7 +49,7 @@ task run(dependsOn: classes, type: JavaExec){
     }
 
     if(project.hasProperty("jvmArgs")){
-        jvmArgs((List<String>)Eval.me(project.getProperties()["jvmArgs"]))
+        jvmArgs((List<String>) Eval.me(project.getProperties()["jvmArgs"]))
     }
 
     if(project.hasProperty("dataDir")){
@@ -60,14 +61,16 @@ task run(dependsOn: classes, type: JavaExec){
     }
 }
 
-task dist(type: Jar, dependsOn: configurations.runtimeClasspath){
+tasks.register('dist', Jar){
+    dependsOn configurations.runtimeClasspath
     dependsOn ":desktop:processResources"
 
     from files(sourceSets.main.output.classesDirs)
     from files(sourceSets.main.output.resourcesDir)
-    from {configurations.runtimeClasspath.collect{ it.isDirectory() ? it : zipTree(it) }}
+    from{ configurations.runtimeClasspath.collect{ it.isDirectory() ? it : zipTree(it) } }
     from files(project.assetsDir)
     exclude("config/**")
+    exclude("**hs_err**.log")
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 
     //don't include steam shared libraries unless necessary
@@ -92,7 +95,8 @@ if(!project.ext.hasSprites() && System.getenv("JITPACK") != "true"){
 
 //this is only for local testing
 //add -Prelease -PversionModifier=steam as build properties
-task steamtest(dependsOn: dist){
+tasks.register('steamtest'){
+    dependsOn dist
     doLast{
         copy{
             from "build/libs/Mindustry.jar"
@@ -192,7 +196,7 @@ platforms.each{ platform ->
                     }
                 }
 
-                //packr is broken and won't let me add one hyphen,so I have to do that myself later
+                //packr is broken and won't let me add one hyphen, so I have to do that myself later
                 outputJsonFile.text = outputJsonFile.text.replace("-enable-native-access=ALL-UNNAMED", "--enable-native-access=ALL-UNNAMED")
             }
 
