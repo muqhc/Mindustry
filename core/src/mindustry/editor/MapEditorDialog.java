@@ -20,6 +20,7 @@ import mindustry.content.*;
 import mindustry.core.GameState.*;
 import mindustry.game.*;
 import mindustry.game.MapObjectives.*;
+import mindustry.game.Teams.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
 import mindustry.io.*;
@@ -93,7 +94,7 @@ public class MapEditorDialog extends Dialog implements Disposable{
             t.button("@editor.import", Icon.download, () -> createDialog("@editor.import",
                 "@editor.importmap", "@editor.importmap.description", Icon.download, (Runnable)loadDialog::show,
                 "@editor.importfile", "@editor.importfile.description", Icon.file, (Runnable)() ->
-                platform.showFileChooser(true, mapExtension, file -> ui.loadAnd(() -> {
+                FileChooser.open(mapExtension).submit(file -> ui.loadAnd(() -> {
                     maps.tryCatchMapError(() -> {
                         if(MapIO.isImage(file)){
                             ui.showInfo("@editor.errorimage");
@@ -104,7 +105,7 @@ public class MapEditorDialog extends Dialog implements Disposable{
                 })),
 
                 "@editor.importimage", "@editor.importimage.description", Icon.fileImage, (Runnable)() ->
-                platform.showFileChooser(true, "png", file ->
+                FileChooser.open("png").submit(file ->
                 ui.loadAnd(() -> {
                     try{
                         Pixmap pixmap = new Pixmap(file);
@@ -123,9 +124,9 @@ public class MapEditorDialog extends Dialog implements Disposable{
 
             t.button("@editor.export", Icon.upload, () -> createDialog("@editor.export",
             "@editor.exportfile", "@editor.exportfile.description", Icon.file,
-                (Runnable)() -> platform.export(editor.tags.get("name", "unknown"), mapExtension, file -> MapIO.writeMap(file, editor.createMap(file))),
+                (Runnable)() -> FileChooser.export(editor.tags.get("name", "unknown"), mapExtension, file -> MapIO.writeMap(file, editor.createMap(file))),
             "@editor.exportimage", "@editor.exportimage.description", Icon.fileImage,
-                (Runnable)() -> platform.export(editor.tags.get("name", "unknown"), "png", file -> {
+                (Runnable)() -> FileChooser.export(editor.tags.get("name", "unknown"), "png", file -> {
                     Pixmap out = MapIO.writeImage(editor.tiles());
                     file.writePng(out);
                     out.dispose();
@@ -218,11 +219,22 @@ public class MapEditorDialog extends Dialog implements Disposable{
                         });
 
                         for(int i = 0; i < steps; i++){
+                            for(TeamData data : state.teams.getActive()){
+                                if(data.team.rules().fillItems && data.cores.size > 0){
+                                    var core = data.cores.first();
+                                    content.items().each(it -> {
+                                        if(it.isOnPlanet(Vars.state.getPlanet()) && !it.isHidden()){
+                                            core.items.set(it, core.getMaximumAccepted(it));
+                                        }
+                                    });
+                                }
+                            }
                             Time.update();
                             for(var build : builds){
                                 build.update();
                             }
                             Groups.powerGraph.update();
+                            Groups.bullet.update(); //needed for mass drivers...
                         }
 
                         //spawned units will cause havoc, so clear them
@@ -816,6 +828,10 @@ public class MapEditorDialog extends Dialog implements Disposable{
         }).growX().row();
         cont.add(pane).expandY().growX().top().left();
 
+        rebuildBlockSelection("");
+    }
+
+    public void rebuildBlockSelection(){
         rebuildBlockSelection("");
     }
 

@@ -9,6 +9,7 @@ import arc.struct.*;
 import arc.util.*;
 import arc.util.CommandHandler.*;
 import arc.util.io.*;
+import mindustry.*;
 import mindustry.annotations.Annotations.*;
 import mindustry.content.*;
 import mindustry.core.GameState.*;
@@ -18,7 +19,9 @@ import mindustry.game.EventType.*;
 import mindustry.game.Teams.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
+import mindustry.io.TypeIO.*;
 import mindustry.logic.*;
+import mindustry.mod.data.*;
 import mindustry.net.*;
 import mindustry.net.Administration.*;
 import mindustry.net.Packets.*;
@@ -28,7 +31,6 @@ import mindustry.world.meta.*;
 import java.io.*;
 import java.net.*;
 import java.nio.*;
-import java.util.zip.*;
 
 import static arc.util.Log.*;
 import static mindustry.Vars.*;
@@ -36,13 +38,17 @@ import static mindustry.Vars.*;
 public class NetServer implements ApplicationListener{
     /** note that snapshots are compressed, so the max snapshot size here is above the typical UDP safe limit */
     private static final int maxSnapshotSize = 800;
-    private static final int timerBlockSync = 0, timerHealthSync = 1;
-    private static final float blockSyncTime = 60 * 6, healthSyncTime = 30;
+    private static final Timekeeper
+        blockSyncTime = Timekeeper.ofSeconds(6f),
+        healthSyncTime = Timekeeper.ofSeconds(0.5f),
+        planPreviewSyncTime = Timekeeper.ofSeconds(0.5f);
+
     private static final FloatBuffer fbuffer = FloatBuffer.allocate(20);
     private static final Writes dataWrites = new Writes(null);
     private static final IntSeq hiddenIds = new IntSeq();
     private static final IntSeq healthSeq = new IntSeq(maxSnapshotSize / 4 + 1);
     private static final Vec2 vector = new Vec2();
+    private static final ClientBuildPlans plansOut = new ClientBuildPlans();
     /** If a player goes away of their server-side coordinates by this distance, they get teleported back. */
     private static final float correctDist = tilesize * 14f;
 
@@ -97,7 +103,7 @@ public class NetServer implements ApplicationListener{
     };
 
     private boolean closing = false, pvpAutoPaused = true;
-    private Interval timer = new Interval(10);
+    //private Interval timer = new Interval(10);
     private IntSet buildHealthChanged = new IntSet();
 
     /** Current kick session. */
@@ -130,7 +136,11 @@ public class NetServer implements ApplicationListener{
             Events.fire(new ConnectionEvent(con));
 
             if(admins.isIPBanned(connect.addressTCP) || admins.isSubnetBanned(connect.addressTCP)){
-                con.kick(KickReason.banned);
+                if(Vars.steam && SteamAdmin.isBanned(connect.addressTCP)){
+                    con.kick("You have been banned from Steam lobbies for disruptive and shameful behavior.");
+                }else{
+                    con.kick(KickReason.banned);
+                }
             }
         });
 
@@ -268,7 +278,7 @@ public class NetServer implements ApplicationListener{
             }
 
             Player player = Player.create();
-            player.admin = admins.isAdmin(uuid, packet.usid);
+            player.admin = admins.isAdmin(uuid, packet.usid) || (steam && SteamAdmin.isAdmin(con.address));
             player.con = con;
             player.con.usid = packet.usid;
             player.con.uuid = uuid;
@@ -296,7 +306,7 @@ public class NetServer implements ApplicationListener{
             //playing in pvp mode automatically assigns players to teams
             player.team(assignTeam(player));
 
-            sendWorldData(player);
+            sendWorldAndAssets(player);
 
             platform.updateRPC();
 
@@ -304,6 +314,17 @@ public class NetServer implements ApplicationListener{
         });
 
         registerCommands();
+    }
+
+    public void sendWorldAndAssets(Player player){
+        if(state.data.hasExternalAssets()){
+            player.con.determiningAssets = true;
+            player.con.receivingAssets = false;
+            player.con.hasConnected = false;
+            sendAssetRequirements(player);
+        }else{
+            sendWorldData(player);
+        }
     }
 
     @Override
@@ -409,7 +430,7 @@ public class NetServer implements ApplicationListener{
                     }else if(found.team() != player.team()){
                         player.sendMessage("[scarlet]Only players on your team can be kicked.");
                     }else{
-                        Timekeeper vtime = cooldowns.get(player.uuid(), () -> new Timekeeper(voteCooldown));
+                        Timekeeper vtime = cooldowns.get(player.uuid(), () -> Timekeeper.ofSeconds(voteCooldown));
 
                         if(!vtime.get()){
                             player.sendMessage("[scarlet]You must wait " + voteCooldown/60 + " minutes between votekicks.");
@@ -503,15 +524,21 @@ public class NetServer implements ApplicationListener{
         return assigner.assign(current, players);
     }
 
-    public void sendWorldData(Player player){
-        ByteArrayOutputStream stream = new ByteArrayOutputStream();
-        DeflaterOutputStream def = new FastDeflaterOutputStream(stream);
-        NetworkIO.writeWorld(player, def);
-        WorldStream data = new WorldStream();
-        data.stream = new ByteArrayInputStream(stream.toByteArray());
-        player.con.sendStream(data);
+    public void sendAssetRequirements(Player player){
+        var assets = state.data.getAllExternalAssets();
+        mainExecutor.submit(() -> {
+            var stream = new ByteArrayOutputStream();
+            NetworkIO.writeRequiredAssets(new FastDeflaterOutputStream(stream), assets);
+            player.con.sendStreamAsync(new AssetRequirementStream(), stream);
+        });
+    }
 
-        debug("Packed @ bytes of world data to @ (@ / @)", stream.size(), player.name, player.con.address, player.uuid());
+    public void sendWorldData(Player player){
+        var stream = new ByteArrayOutputStream();
+        NetworkIO.writeWorld(player, new FastDeflaterOutputStream(stream));
+        player.con.sendStream(new WorldStream(), stream);
+
+        debug("Packed @ of world data to @ (@ / @)", Strings.formatByteCount(stream.size()), player.name, player.con.address, player.uuid());
     }
 
     public void addPacketHandler(String type, Cons2<Player, String> handler){
@@ -550,6 +577,12 @@ public class NetServer implements ApplicationListener{
 
             String message = Strings.format("&lb@&fi&lk has disconnected. [&lb@&fi&lk] (@)", player.plainName(), player.uuid(), reason);
             if(Config.showConnectMessages.bool()) info(message);
+        }
+
+        //force despawn the player unit upon disconnection in case the game is paused
+        Unit u = player.unit();
+        if(u != null && u.spawnedByCore && !u.dead){
+            Call.unitDespawn(u);
         }
 
         player.remove();
@@ -635,20 +668,58 @@ public class NetServer implements ApplicationListener{
         return Float.isInfinite(f) || Float.isNaN(f);
     }
 
+    public static void syncBuilding(Building build){
+        if(build == null) return;
+        netServer.syncStream.reset();
+        netServer.dataStreamWrites.i(build.pos());
+        netServer.dataStreamWrites.s(build.block.id);
+        build.writeSync(netServer.dataStreamWrites);
+
+        Call.blockSnapshot((short)1, netServer.syncStream.toByteArray());
+        netServer.syncStream.reset();
+    }
+
+    @Remote(targets = Loc.client, priority = PacketPriority.low, unreliable = true)
+    public static void requestBlockSnapshot(Player player, int pos){
+        Building build = world.build(pos);
+        if(build != null && build.team == player.team()){
+            netServer.syncStream.reset();
+            netServer.dataStreamWrites.i(build.pos());
+            netServer.dataStreamWrites.s(build.block.id);
+            build.writeSync(netServer.dataStreamWrites);
+
+            Call.blockSnapshot(player.con, (short)1, netServer.syncStream.toByteArray());
+            netServer.syncStream.reset();
+        }
+    }
+
+    //sent from the client to the server in batches with the same incrementing groupId
+    @Remote(targets = Loc.client, unreliable = true, priority = PacketPriority.low)
+    public static void clientPlanSnapshot(Player player, int groupId, @Nullable ClientBuildPlans plans){
+        if(player == null) return;
+        player.handlePreviewPlans(groupId, plans);
+    }
+
+    //sent from the server to the client in batches with the same incrementing groupId
+    @Remote(targets = Loc.server, unreliable = true, priority = PacketPriority.low, variants = Variant.one)
+    public static void clientPlanSnapshotReceived(Player player, int groupId, @Nullable ClientBuildPlans plans){
+        clientPlanSnapshot(player, groupId, plans);
+    }
+
     @Remote(targets = Loc.client, unreliable = true, priority = PacketPriority.high)
     public static void clientSnapshot(
-    Player player,
-    int snapshotID,
-    int unitID,
-    boolean dead,
-    float x, float y,
-    float pointerX, float pointerY,
-    float rotation, float baseRotation,
-    float xVelocity, float yVelocity,
-    Tile mining,
-    boolean boosting, boolean shooting, boolean chatting, boolean building,
-    Block selectedBlock, int selectedRotation, @Nullable Queue<BuildPlan> plans,
-    float viewX, float viewY, float viewWidth, float viewHeight
+        Player player,
+        int snapshotID,
+        int unitID,
+        boolean dead,
+        float x, float y,
+        float pointerX, float pointerY,
+        float rotation, float baseRotation,
+        float xVelocity, float yVelocity,
+        Tile mining,
+        boolean boosting, boolean shooting, boolean chatting, boolean building,
+        Block selectedBlock, int selectedRotation, @Nullable Queue<BuildPlan> plans,
+        float viewX, float viewY, float viewWidth, float viewHeight
     ){
         NetConnection con = player.con;
         if(con == null || snapshotID < con.lastReceivedClientSnapshot) return;
@@ -836,6 +907,48 @@ public class NetServer implements ApplicationListener{
     }
 
     @Remote(targets = Loc.client, priority = PacketPriority.high)
+    public static void requestWorld(Player player){
+        if(!player.con.hasBegunConnecting || player.con.determiningAssets || !player.con.receivingAssets || player.con.hasConnected) return;
+
+        player.con.receivingAssets = false;
+        netServer.sendWorldData(player);
+    }
+
+    @Remote(targets = Loc.client, priority = PacketPriority.high)
+    public static void requestAssets(Player player, short[] ids){
+        if(!player.con.hasBegunConnecting || !player.con.determiningAssets || player.con.receivingAssets || player.con.hasConnected) return;
+
+        player.con.determiningAssets = false;
+        player.con.receivingAssets = true;
+
+        if(ids.length == 0){  //no assets required, all cached
+            player.con.receivingAssets = false;
+            netServer.sendWorldData(player);
+        }else{
+            Seq<DataAsset> res = new Seq<>();
+            Seq<DataAsset> allAssets = state.data.getAllExternalAssets();
+            for(short id : ids){
+                if(id >= allAssets.size || id < 0) continue;
+                res.add(allAssets.get(id));
+            }
+
+            //packing the data and reading it from disk can be async; it shouldn't need to block the main thread.
+            mainExecutor.submit(() -> {
+                try{
+                    var stream = new ByteArrayOutputStream();
+                    NetworkIO.writeAssets(stream, res);
+
+                    debug("Packed @ of asset data to @ (@ / @)", Strings.formatByteCount(stream.size()), player.name, player.con.address, player.uuid());
+
+                    player.con.sendStreamAsync(new AssetStream(), stream);
+                }catch(Exception e){
+                    Log.err(e);
+                }
+            });
+        }
+    }
+
+    @Remote(targets = Loc.client, priority = PacketPriority.high)
     public static void connectConfirm(Player player){
         if(player.con.kicked) return;
 
@@ -858,6 +971,13 @@ public class NetServer implements ApplicationListener{
         }
 
         Events.fire(new PlayerJoin(player));
+
+        //plugins may have kicked the player immediately in PlayerJoinEvent, so don't respawn if that happens
+        if(!player.con.kicked){
+            //instantly respawn the player upon connection, even if the game is paused
+            player.deathTimer = Player.deathDelay;
+            player.update();
+        }
     }
 
     public boolean isWaitingForPlayers(){
@@ -1093,11 +1213,11 @@ public class NetServer implements ApplicationListener{
                 }
             });
 
-            if(Groups.player.size() > 0 && Core.settings.getBool("blocksync") && timer.get(timerBlockSync, blockSyncTime)){
+            if(Groups.player.size() > 0 && Core.settings.getBool("blocksync") && blockSyncTime.poll()){
                 writeBlockSnapshots();
             }
 
-            if(Groups.player.size() > 0 && buildHealthChanged.size > 0 && timer.get(timerHealthSync, healthSyncTime)){
+            if(Groups.player.size() > 0 && buildHealthChanged.size > 0 && healthSyncTime.poll()){
                 healthSeq.clear();
 
                 var iter = buildHealthChanged.iterator();
@@ -1124,8 +1244,60 @@ public class NetServer implements ApplicationListener{
 
                 buildHealthChanged.clear();
             }
+
+            //TODO: this system is a big bandwidth waster, it would be nicer to have a diff system instead
+            if(Groups.player.size() > 0 && planPreviewSyncTime.poll()){
+
+                if(!headless){ //update local player's plans so that clients see it
+                    player.previewPlansCurrent.clear();
+                    control.input.getSyncedPlans(player.previewPlansCurrent);
+                    player.previewPlansCurrent.truncate(maxPlayerPreviewPlans);
+                }
+
+                Groups.player.each(player -> {
+                    int id = ++player.lastPreviewPlanGroupServer;
+                    plansOut.clear();
+
+                    var plans = player.getPreviewPlans();
+
+                    if(plans.isEmpty()){
+                        clientPlanSnapshotSend(player, id, null);
+                    }else{
+                        BuildPlan[] items = plans.items;
+                        int size = plans.size;
+                        //max snapshot size = 800
+                        //max reasonable plan size = 12
+                        //divide the two to get the size of plan batches
+                        final int chunkSize = 900 / 12;
+
+                        if(size < chunkSize){
+                            plansOut.set(plans);
+                            clientPlanSnapshotSend(player, id, plansOut);
+                        }else{
+                            for(int i = 0; i < size; i += chunkSize){
+                                int len = Math.min(i + chunkSize, size) - i;
+                                plansOut.ensureCapacity(len);
+                                System.arraycopy(items, i, plansOut.items, 0, len);
+                                plansOut.size = len;
+
+                                clientPlanSnapshotSend(player, id, plansOut);
+                            }
+                        }
+                    }
+                });
+            }
         }catch(IOException e){
             Log.err(e);
+        }
+    }
+
+    static void clientPlanSnapshotSend(Player player, int groupId, ClientBuildPlans plans){
+
+        //only send to others of the same team
+        for(Player other : player.team().data().players){
+            if(other != player && !other.isLocal() && other.con != null && other.con.isConnected()){
+                Call.clientPlanSnapshotReceived(other.con, player, groupId, plans);
+            }
         }
     }
 
