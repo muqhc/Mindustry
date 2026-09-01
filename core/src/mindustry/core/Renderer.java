@@ -159,14 +159,14 @@ public class Renderer implements ApplicationListener{
             baseTarget = Mathf.lerp(minZoom, maxZoom, control.input.logicCutsceneZoom);
         }
 
-        float dest = Mathf.clamp(Mathf.round(baseTarget, 0.5f), minScale(), maxScale());
+        float dest = Mathf.clamp(baseTarget, minScale(), maxScale());
         camerascale = Mathf.lerpDelta(camerascale, dest, 0.1f);
         if(Mathf.equal(camerascale, dest, 0.001f)) camerascale = dest;
         unitLaserOpacity = settings.getInt("unitlaseropacity") / 100f;
         laserOpacity = settings.getInt("lasersopacity") / 100f;
         bridgeOpacity = settings.getInt("bridgeopacity") / 100f;
-        animateShields = settings.getBool("animatedshields");
-        animateWater = settings.getBool("animatedwater");
+        animateWater = settings.getBool("animatedwater"); //TODO: rename to animatedSurfaces or something
+        animateShields = animateWater; //vestigial: TODO, remove
         drawStatus = settings.getBool("blockstatus");
         enableEffects = settings.getBool("effects");
         drawDisplays = !settings.getBool("hidedisplays");
@@ -349,6 +349,37 @@ public class Renderer implements ApplicationListener{
             }
         }
 
+        //draw objective markers
+        float scaleFactor = 4f / renderer.getDisplayScale();
+        state.rules.objectives.eachRunning(obj -> {
+            for(var marker : obj.markers){
+                if(marker.world != -1){
+                    marker.draw(marker.autoscale ? scaleFactor : 1);
+                }
+            }
+        });
+
+        for(var marker : state.markers.worldMarkers){
+            marker.draw(marker.autoscale ? scaleFactor : 1);
+        }
+        Draw.reset();
+
+        lights.add(() -> {
+            state.rules.objectives.eachRunning(obj -> {
+                for(var marker : obj.markers){
+                    if(marker.light != -1){
+                        marker.drawLight(marker.autoscale ? scaleFactor : 1);
+                    }
+                }
+            });
+
+            for(var marker : state.markers.lightMarkers){
+                marker.drawLight(marker.autoscale ? scaleFactor : 1);
+            }
+
+            Draw.reset();
+        });
+
         if(state.rules.lighting && drawLight){
             Draw.draw(Layer.light, lights::draw);
         }
@@ -382,23 +413,6 @@ public class Renderer implements ApplicationListener{
             });
         }
 
-        float scaleFactor = 4f / renderer.getDisplayScale();
-
-        //draw objective markers
-        state.rules.objectives.eachRunning(obj -> {
-            for(var marker : obj.markers){
-                if(marker.world){
-                    marker.draw(marker.autoscale ? scaleFactor : 1);
-                }
-            }
-        });
-
-        for(var marker : state.markers){
-            if(marker.world){
-                marker.draw(marker.autoscale ? scaleFactor : 1);
-            }
-        }
-
         Draw.reset();
 
         Draw.draw(Layer.overlayUI, overlays::drawTop);
@@ -418,7 +432,7 @@ public class Renderer implements ApplicationListener{
 
         Groups.draw.draw(Drawc::draw);
 
-        if(drawDebugHitboxes){
+        if(settings.getBool("drawhitboxes")){
             DebugCollisionRenderer.draw();
         }
 
@@ -519,13 +533,11 @@ public class Renderer implements ApplicationListener{
     }
 
     public float minScale(){
-        if(control.input.logicCutscene) return Scl.scl(minZoom);
-        return Scl.scl(minZoomInGame);
+        return control.input.logicCutscene ? Scl.scl(minZoom) : Scl.scl(minZoomInGame);
     }
 
     public float maxScale(){
-        if(control.input.logicCutscene) return Mathf.round(Scl.scl(maxZoom));
-        return Mathf.round(Scl.scl(maxZoomInGame));
+        return (float)(control.input.logicCutscene ? Mathf.round(Scl.scl(maxZoom)) : Mathf.round(Scl.scl(maxZoomInGame)));
     }
 
     public float getScale(){

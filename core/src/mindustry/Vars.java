@@ -178,7 +178,7 @@ public class Vars implements Loadable{
     /** multicast group for discovery.*/
     public static final String multicastGroup = "227.2.7.7";
     /** Maximum delta time. If the actual delta time (*60) between frames is higher than this number, the game will start to slow down. */
-    public static float maxDeltaClient = 6f, maxDeltaServer = 10f;
+    public static float maxDeltaClient = 4f, maxDeltaServer = 4f;
     /** whether the graphical game client has loaded */
     public static boolean clientLoaded = false;
     /** whether the serpulo campaign sectors were remapped (older save) */
@@ -216,8 +216,6 @@ public class Vars implements Loadable{
     /** Whether to draw shadows of blocks at map edges and static blocks.
      * Do not change unless you know exactly what you are doing.*/
     public static boolean enableDarkness = true;
-    /** Whether to draw debug lines for collisions. */
-    public static boolean drawDebugHitboxes = false;
     /** Whether to draw avoidance fields. */
     public static boolean debugDrawAvoidance = false;
     /** Whether the on-disk server file cache has been loaded. */
@@ -282,6 +280,7 @@ public class Vars implements Loadable{
     public static GlobalVars logicVars;
     public static MapEditor editor;
     public static AvoidanceProcess avoidance;
+    public static PhysicsProcess unitPhysics = new PhysicsProcess();
     public static DataAssetCache assetCache;
     public static GameService service = new GameService();
 
